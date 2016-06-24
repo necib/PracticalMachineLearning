@@ -1,0 +1,238 @@
+---
+title: "Practical Machine Learning Project"
+author: "Chokri Ben Necib"
+date: "22 Juni 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+   
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [here:] (http://groupware.les.inf.puc-rio.br/har)
+
+
+## Reproducibility 
+
+ Following libraries are needed:
+ 
+ ```{r echo=FALSE, results='hide', message=FALSE, warning==FALSE}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(tree)
+library(party)
+library(ggplot2)
+library(randomForest) 
+library(gbm)
+library(e1071)
+```
+  * library(caret)
+  * library(rpart)
+  * library(rpart.plot)
+  * library(rattle)
+  * library(tree)
+  * library(party)
+  * library(ggplot2)
+  * library(randomForest) 
+  * library(gbm)
+  * library(e1071)
+
+
+set Seed for pseudo-random generator
+```{r echo=TRUE}
+set.seed(8279)
+```
+
+# Getting and Cleaning Data
+
+First we have to download data from the following website and load it in R. 
+
+The training data for this project are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+```{r echo=FALSE}
+setwd("D:/Users/ChokriBenNecib/Data Analytics/Tools/RFiles")
+```
+
+```{r echo=TRUE}
+dfm_train <- read.csv(file.path("./Data/", "pml-training.csv"), na.strings="NA")
+dfm_test  <- read.csv("./Data/pml-testing.csv", na.strings="NA")
+```
+
+```{r echo=TRUE, results='hide'}
+summary(dfm_train)
+summary(dfm_test)
+```
+
+```{r echo=TRUE}
+dim(dfm_train)
+```
+
+The training data has 19622 observations and 160 variables, and the distribution of the five measured classes A,B,C,D,E is:
+```{r echo=TRUE}
+table(dfm_train$classe)
+```
+## Data Preprocessing and Cleaning 
+
+1. delete Variables with more than 50% NA values
+
+```{r echo=TRUE}
+check_Col50 <- function(x) {
+        if(sum(is.na(dfm_train[, x])) > 0.50*nrow(dfm_train))    return(TRUE)
+else return(FALSE)
+}
+
+ 
+list_Col50 <- sapply(colnames(dfm_train), check_Col50)
+
+dfm_train <- dfm_train[, !list_Col50]
+dfm_test <- dfm_test[, !list_Col50]
+```
+
+2. identify near-zero variance variables and  remove them
+
+```{r echo=TRUE}
+# find near-zeros
+ nz <- nearZeroVar(dfm_train, saveMetrics=TRUE)
+ nz_Cols <- subset(nz, nz$nzv==TRUE)
+# return positions of non-zero variables
+ idx_nz_Cols <- nearZeroVar(dfm_train, saveMetrics=FALSE)  
+```
+ 
+```{r echo=TRUE}
+# remove non-zero variables from Traingset and testset
+dfm_test <- dfm_test[, -idx_nz_Cols] 
+dfm_train <- dfm_train[, -idx_nz_Cols] 
+```
+
+3. delete Variables which are irrelevant for the classifiers such as X ,*user_name*, *raw_timestamp_part_1*, *raw_timestamp_part_2*, *cvtd_timestamp* and *new_window* 
+
+```{r echo=TRUE}
+dfm_train <- dfm_train[, -(1:6)]
+dfm_test <- dfm_test[, -(1:6)]
+```
+
+Now the number of variables is reduced to:
+```{r echo=TRUE}
+dim(dfm_train)
+```
+
+
+## Approach
+
+The outcome variable is *classe*, a factor variable with 5 levels. In the experiment participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in 5 different fashions:
+
+- exactly according to the specification (Class A)
+- throwing the elbows to the front (Class B)
+- lifting the dumbbell only halfway (Class C)
+- lowering the dumbbell only halfway (Class D)
+- throwing the hips to the front (Class E)
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
+Four models will be tested using decision tree and random forest, vector Machine and Boosting trees algorithms. Model evaluations will be based on maximizing the accuracy and minimizing the out-of-sample error. 
+The model with the highest accuracy will be chosen as our final model.
+
+## Out-of-sample error
+
+The out-of-sample error is resulted from applying prediction algorithm to a new data set. 
+It corresponds to the quantity *1-accuracy* in the cross-validation data. Accuracy is the proportion of correct classified observations over the total sample in the subTesting data set. It is also the expected accuracy in the out-of-sample data set in testing subset. Thus, the expected value of the out-of-sample error will correspond to the expected number of *missclassified observations/total observations* in the Test subset, which is the quantity: *1-accuracy* found from the cross-validation data set.
+
+## Explore Data
+
+```{r echo=TRUE}
+plot(dfm_train$classe, col="blue", main="Histogram of variable CLASSE for training dataset", xlab="classe levels", ylab="Frequency")
+```
+
+Based on the graph above, we can see that each level frequency is within the same order of magnitude of each other. Level A is the most frequent while level D is the least frequent.
+
+## Data Partitioning  and Cross Validation 
+
+Cross-validation will be performed by subsampling our training data set randomly without replacement into 2 subsamples: Train Set (75% of the original Training data ) and Test Set data (25%). Our models will be fitted on the Train data set and tested on the Test Set. Once the most accurate model is choosen, it will be tested on the original Test data *dfm_test*.
+
+```{r echo=TRUE}
+inTrain = createDataPartition(dfm_train$classe, p=0.75, list=FALSE)
+training = dfm_train[ inTrain,]
+testing =  dfm_train[-inTrain,]
+``` 
+
+
+# Building the four models using tree, random Forest and Vector Machine
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+t_mod <- train (classe~., data = training, method= "rpart")
+rf_mod <- train (classe~., data = training, method= "rf")
+vm_mod <- svm(classe~., data = training)
+gbm_mod <- train(classe~., data = training, method="gbm", verbose=F)
+
+```
+
+## calculate accuracy and Compare the models
+
+```{r echo=TRUE}
+# calculate accuracy for tree Model
+cm_t <- confusionMatrix(testing$classe,predict(t_mod, testing))
+print(cm_t)
+```
+
+```{r echo=TRUE}
+# calculate accuracy for Random Forest
+cm_rf <- confusionMatrix(testing$classe,predict(rf_mod, testing))
+print(cm_rf)
+```
+
+```{r echo=TRUE}
+# calculate accuracy for Random Forest
+cm_vm <- confusionMatrix(testing$classe,predict(vm_mod, testing))
+print(cm_vm)
+```
+
+```{r echo=TRUE}
+# calculate accuracy for Bossting with trees
+cm_gbm <- confusionMatrix(testing$classe,predict(gbm_mod, testing))
+print(cm_gbm)
+```
+
+* We can compare Accruacy for all models as follows.
+
+```{r echo=TRUE}
+Model <- c("Reg Tree", "Random Forest", "vector Machine","Boosting trees")
+Accuracy  <- c(cm_t$overall[1], cm_rf$overall[1], cm_vm$overall[1], cm_gbm$overall[1])
+OutOfsampleError <- 1-Accuracy
+```
+
+```{r echo=TRUE}
+performance <- cbind(Model,Accuracy,OutOfsampleError)
+print(performance[, 1:3])
+```
+
+Random Forest comes out on top with the highest accuracy, the lowest out of sample error and a 99,3% prediction accuracy via cross-validation.
+Using Random Forest as our method we can now execute the predict function against our test data.
+The expected out-of-sample error is estimated at 0,7%. The expected out-of-sample error is calculated as *1-accuracy* for predictions made against the cross-validation set.
+
+## Prediction of Test data (20 cases) with Random Forest
+
+ Our Test data set comprises 20 cases. With an accuracy above 99,3% on our cross-validation data, we expect that few or none of the test samples will be missclassified using Random Forest.
+
+```{r echo=TRUE}
+rf_Pred <-predict(rf_mod, dfm_test)
+print(rf_Pred)
+```
+
+Note that we would get the same result by applying *gbm* algorithm:
+
+```{r echo=TRUE}
+gbm_Pred <-predict(gbm_mod, dfm_test)
+print(gbm_Pred)
+```
+
+## Conclusion
+
+While Regression Trees, svm and Generalized Boosted Regression trees have given us accurate predictions using this dataset, Random Forest tested with the highest overall accuracy. Therefore, by using a variety of models it is possible to identify a training model that will allow us to accurately predict how well a person is performing a particular exercise using the information collected by Human Activity Recognition devices.
